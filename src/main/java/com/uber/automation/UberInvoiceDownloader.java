@@ -109,6 +109,30 @@ public class UberInvoiceDownloader {
             
         } catch (Exception e) {
             System.err.println("[X] Fatal Error: " + e.getMessage());
+            
+            // Check if it's a Playwright launch failure and print helpful suggestions for Linux/macOS users
+            String errorMsg = e.getMessage() != null ? e.getMessage() : "";
+            if (errorMsg.contains("Failed to launch") || errorMsg.contains("Browser closed") || e instanceof PlaywrightException) {
+                String os = System.getProperty("os.name").toLowerCase();
+                boolean isLinux = os.contains("nix") || os.contains("nux") || os.contains("aix");
+                boolean isMac = os.contains("mac");
+                
+                if (isLinux || isMac) {
+                    System.err.println("\n=== Playwright Troubleshooting Guidelines ===");
+                    if (isLinux) {
+                        System.err.println("[*] If you are running on a headless Linux environment/server without a GUI:");
+                        System.err.println("    1. Generate '" + AUTH_STATE_PATH + "' on a local machine with a GUI (Windows/macOS/Linux Desktop).");
+                        System.err.println("    2. Copy the generated '" + AUTH_STATE_PATH + "' to this server's application directory.");
+                        System.err.println("    3. Run the application again here (it will run headlessly using Phase 2).");
+                        System.err.println("[*] If you are missing system libraries required by Chromium on Linux, run this command with administrative privileges:");
+                        System.err.println("    mvn exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args=\"install-deps\"");
+                    } else if (isMac) {
+                        System.err.println("[*] On macOS, ensure you have run the application in an interactive terminal context.");
+                        System.err.println("[*] If Chromium is failing to launch, verify that Playwright browser binaries are correctly installed.");
+                    }
+                    System.err.println("============================================\n");
+                }
+            }
             e.printStackTrace();
         }
     }
@@ -182,7 +206,7 @@ public class UberInvoiceDownloader {
     
     private static void downloadInvoices(Page page, List<String> tripUrls) {
         String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy_MM_dd"));
-        Path downloadDir = Paths.get("./downloads/uber_invoices_" + dateStr);
+        Path downloadDir = Paths.get("downloads", "uber_invoices_" + dateStr);
         
         try {
             Files.createDirectories(downloadDir);

@@ -14,7 +14,12 @@ An automated utility built with Java and the Playwright SDK to securely login, n
 
 - **Java Development Kit (JDK)**: Java 17 or Java 21 (LTS) installed.
 - **Maven**: Installed and available on your system `PATH`.
-- (Playwright dependencies and browser binaries will be downloaded automatically on the first run).
+- **Browser & System Dependencies**: 
+  - On Windows and macOS, Playwright will automatically download the Chromium browser binaries on the first run.
+  - On Linux, additional system-level libraries are required by Chromium. You can install them by running:
+    ```bash
+    mvn exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install-deps"
+    ```
 
 ## Building
 
@@ -26,11 +31,20 @@ mvn clean package -DskipTests
 
 ## Running the Application
 
-Execute the compiled application using Maven:
+Execute the compiled application using Maven. The following syntax is compatible across Unix-based shells (Bash, Zsh) and Windows Command Prompt / PowerShell:
 
 ```bash
-mvn exec:java "-Dexec.mainClass=com.uber.automation.UberInvoiceDownloader"
+mvn exec:java -Dexec.mainClass=com.uber.automation.UberInvoiceDownloader
 ```
+
+### Running on Headless Linux Servers/Containers
+
+Because Phase 1 (Interactive Setup) requires a graphical interface (non-headless mode) to perform login, MFA, and bypass anti-bot protections, running it directly on a headless remote server will fail. Follow these steps to use this downloader on a headless server:
+
+1. **Run locally first**: Clone the repository and execute the application on your local machine with a graphical environment (Windows, macOS, or Linux Desktop).
+2. **Generate Session**: Log in and complete the interactive setup. This will generate the `auth_state.json` file in the project's root folder.
+3. **Copy to Server**: Copy `auth_state.json` to the root folder of the application on your remote headless server.
+4. **Execute**: Run the application on the headless server. Since the session state exists, it will directly start in headless mode (Phase 2) and download the invoices.
 
 ### First Run (Interactive Mode)
 
