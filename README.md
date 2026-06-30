@@ -7,7 +7,7 @@ An automated utility built with Java and the Playwright SDK to securely login, n
 - **Two-Phase Authentication**: Seamlessly handles Uber's anti-bot protections.
   - **Phase 1 (Interactive Setup)**: If no session is found, the program launches a visible browser where you log in manually, complete MFA/CAPTCHAs, and confirm in your terminal. It then serializes your secure session state to an `auth_state.json` file.
   - **Phase 2 (Headless Execution)**: On subsequent runs, the program runs headlessly in the background using the saved session state.
-- **Dynamic Infinite Scroll**: Automatically scrolls through the React-based Uber Trips dashboard, dynamically loading historical trips based on a 30-day lookback window.
+- **Dynamic Infinite Scroll**: Automatically scrolls through the React-based Uber Trips dashboard, dynamically loading historical trips based on a 365-day lookback window.
 - **Resilient Downloads**: Intercepts native PDF downloads and gracefully falls back to generating print-to-PDF receipts when native buttons are missing. Implements local try-catch and retry logic for individual trips.
 
 ## Prerequisites
@@ -29,26 +29,38 @@ mvn clean package -DskipTests
 Execute the compiled application using Maven:
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.uber.automation.UberInvoiceDownloader"
+mvn exec:java "-Dexec.mainClass=com.uber.automation.UberInvoiceDownloader"
 ```
 
 ### First Run (Interactive Mode)
+
 When you run the application for the first time, a Chromium browser window will open.
+
 1. Log into your Uber account.
 2. Complete any required Multi-Factor Authentication (MFA).
 3. Navigate to the main dashboard.
-4. Go back to your terminal and **press ENTER**.
-5. The application will save your session to `auth_state.json` and proceed to download your invoices.
+4. Select the account you want to extract (eg. Personal or business)
+5. Select trip period to extract (eg "Past 30 days")
+6. Go back to your terminal and **press ENTER**.
+7. The application will save your session to `auth_state.json` and proceed to download your invoices.
 
 ### Subsequent Runs (Headless Mode)
+
 As long as `auth_state.json` remains valid and unexpired, running the application again will execute headlessly in the background without requiring manual intervention.
 
 ## Output
 
 Downloaded PDF invoices are organized in local date-stamped directories:
+
 ```
-./downloads/uber_invoices_YYYY_MM_DD/Uber_Invoice_YYYY_MM_DD_[TripID].pdf
+./downloads/uber_invoices_RUN_DATE/Uber_Invoice_TRIP_DATE_PRICE.pdf
 ```
 
+Where:
+- `RUN_DATE`: Format `YYYY_MM_DD` (the date when the script was run).
+- `TRIP_DATE`: Format `YYYYMMDD` (the date of the actual trip, e.g. `20260630`).
+- `PRICE`: Format `CURRENCY_AMOUNT` (the trip price, e.g. `CLP7853`).
+
 ## Disclaimer
+
 This project is for educational and personal automation purposes only. Web scraping and automation might violate the terms of service of some platforms. Ensure you comply with all applicable policies before running this software.
