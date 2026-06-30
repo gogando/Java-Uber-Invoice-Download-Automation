@@ -13,6 +13,12 @@ import java.util.List;
 import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.rendering.ImageType;
+import java.awt.image.BufferedImage;
+import javax.imageio.ImageIO;
 
 public class UberInvoiceDownloader {
     
@@ -97,6 +103,9 @@ public class UberInvoiceDownloader {
                 System.out.println("[+] Successfully accessed Trips dashboard.");
             }
             
+            // Select "Past 30 days" filter on the dashboard
+            selectPast30DaysFilter(page);
+            
             // Download Loop using the active page
             List<String> validTripUrls = extractValidTrips(page);
             System.out.println("[+] Discovered " + validTripUrls.size() + " trips to process.");
@@ -143,7 +152,7 @@ public class UberInvoiceDownloader {
         
         System.out.println("[+] Finding trips since: " + cutoffDate);
         
-        int previousCount = 0;
+        int previousUniqueCount = 0;
         int retries = 0;
         String selector = "a[href*='/trips/'], a[href*='jobId=']";
         
@@ -165,10 +174,10 @@ public class UberInvoiceDownloader {
                     String href = tripLinks.nth(i).getAttribute("href");
                     String tripId = extractTripId(href);
                     if (tripId != null && !tripId.isEmpty()) {
-                        String fullUrl = "https://riders.uber.com/trips/" + tripId;
+                        String fullUrl = buildTripUrl(tripId, href);
                         if (!extractedUrls.contains(fullUrl)) {
                             extractedUrls.add(fullUrl);
-                            System.out.println("[+] Discovered trip ID: " + tripId);
+                            System.out.println("[+] Discovered trip ID: " + tripId + " -> URL: " + fullUrl);
                         }
                     }
                 } catch (Exception e) {
@@ -181,23 +190,29 @@ public class UberInvoiceDownloader {
                 break;
             }
             
-            // Scroll to load more
+            int currentUniqueCount = extractedUrls.size();
+            System.out.println("[DEBUG] Unique trips extracted so far: " + currentUniqueCount);
+            
+            // Dual scroll: Scroll both the last element and the full page body
             if (currentCount > 0) {
                 System.out.println("[+] Scrolling last trip element into view to trigger lazy loading...");
-                tripLinks.last().scrollIntoViewIfNeeded();
-            } else {
-                System.out.println("[+] Scrolling window to bottom...");
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
+                try {
+                    tripLinks.last().scrollIntoViewIfNeeded();
+                } catch (Exception e) {
+                    // Ignore
+                }
             }
+            System.out.println("[+] Scrolling window to bottom...");
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
             
-            Thread.sleep((long) (2500 + Math.random() * 2000));
+            Thread.sleep((long) (3000 + Math.random() * 2000));
             
-            tripLinks = page.locator(selector);
-            if (tripLinks.count() == currentCount) {
-                retries++; // No new trips loaded
+            if (currentUniqueCount == previousUniqueCount) {
+                retries++; // No new unique trips discovered
+                System.out.println("[DEBUG] No new unique trips found on scroll. Retry " + retries + "/3...");
             } else {
                 retries = 0;
-                previousCount = currentCount;
+                previousUniqueCount = currentUniqueCount;
             }
         }
         
@@ -244,6 +259,9 @@ public class UberInvoiceDownloader {
                     String filename = "Uber_Invoice_" + tripDate + "_" + tripPrice + ".pdf";
                     Path outputPath = downloadDir.resolve(filename);
                     
+                    String jpgFilename = "Uber_Invoice_" + tripDate + "_" + tripPrice + ".jpg";
+                    Path jpgOutputPath = downloadDir.resolve(jpgFilename);
+                    
                     // Look for Download PDF button
                     Locator downloadBtn = page.locator("a:has-text('Download Invoice'), a:has-text('Download PDF'), button:has-text('Download')");
                     
@@ -257,6 +275,9 @@ public class UberInvoiceDownloader {
                         page.pdf(new Page.PdfOptions().setPath(outputPath).setPrintBackground(true));
                         System.out.println("    [+] Successfully exported PDF to: " + outputPath);
                     }
+                    
+                    // Convert the downloaded/generated PDF to JPEG
+                    convertPdfToJpg(outputPath, jpgOutputPath);
                     
                     break; // Success, break retry loop
                     
@@ -316,21 +337,87 @@ public class UberInvoiceDownloader {
     private static String extractTripId(String url) {
         if (url == null) return null;
         
+        // 1. First, check for uuid or jobId query parameters which contain the true unique ID
+        Pattern queryParamPattern = Pattern.compile("[?&](uuid|jobId)=([a-zA-Z0-9-]+)");
+        Matcher queryParamMatcher = queryParamPattern.matcher(url);
+        if (queryParamMatcher.find()) {
+            return queryParamMatcher.group(2);
+        }
+        
+        // 2. Fall back to path-based extraction, ignoring blocklisted path segments
         Pattern pathPattern = Pattern.compile("/trips/([a-zA-Z0-9-]+)");
         Matcher pathMatcher = pathPattern.matcher(url);
         if (pathMatcher.find()) {
             String id = pathMatcher.group(1);
-            if (!id.equals("trips")) {
+            if (!id.equals("trips") && !id.equals("details") && !id.equals("help") && !id.equals("privacy")) {
                 return id;
             }
         }
         
-        Pattern queryPattern = Pattern.compile("jobId=([a-zA-Z0-9-]+)");
-        Matcher queryMatcher = queryPattern.matcher(url);
-        if (queryMatcher.find()) {
-            return queryMatcher.group(1);
-        }
-        
         return null;
+    }
+    
+    private static String buildTripUrl(String tripId, String originalHref) {
+        if (originalHref.contains("uuid=")) {
+            return "https://riders.uber.com/trips/details?uuid=" + tripId;
+        } else if (originalHref.contains("jobId=")) {
+            return "https://riders.uber.com/trips/details?jobId=" + tripId;
+        }
+        return "https://riders.uber.com/trips/" + tripId;
+    }
+    
+    private static void selectPast30DaysFilter(Page page) {
+        System.out.println("[+] Checking if 'Past 30 days' filter is selected...");
+        try {
+            // Locate the filter dropdown button. It typically displays the active selection: e.g. "All Trips", "Past 30 days", etc.
+            Locator filterBtn = page.locator("button:has-text('All Trips'), button:has-text('Past 30 days'), button:has-text('January'), button:has-text('February'), button:has-text('March'), button:has-text('April'), button:has-text('May'), button:has-text('June'), button:has-text('July'), button:has-text('August'), button:has-text('September'), button:has-text('October'), button:has-text('November'), button:has-text('December')");
+            
+            if (filterBtn.count() > 0) {
+                String currentText = filterBtn.first().innerText();
+                System.out.println("[+] Current filter text: " + currentText.trim());
+                
+                if (!currentText.toLowerCase().contains("past 30 days")) {
+                    System.out.println("[+] Clicking filter button to expand the dropdown...");
+                    filterBtn.first().click();
+                    
+                    // Wait for options list/popover
+                    Thread.sleep(1500);
+                    
+                    // Target "Past 30 days" options inside the dropdown menu (e.g. list items, buttons, or role=option)
+                    Locator past30Option = page.locator("button:has-text('Past 30 days'), li:has-text('Past 30 days'), [role='menuitem']:has-text('Past 30 days'), [role='option']:has-text('Past 30 days')");
+                    if (past30Option.count() > 0) {
+                        System.out.println("[+] Clicking 'Past 30 days' option...");
+                        past30Option.first().click();
+                    } else {
+                        System.out.println("[+] Fallback: clicking any element with exact text 'Past 30 days'...");
+                        page.locator("text=Past 30 days").last().click();
+                    }
+                    
+                    // Wait for page to reload or settle
+                    page.waitForLoadState(LoadState.NETWORKIDLE);
+                    System.out.println("[+] Successfully selected 'Past 30 days' filter.");
+                } else {
+                    System.out.println("[+] 'Past 30 days' filter is already selected.");
+                }
+            } else {
+                System.out.println("[!] Warning: Could not locate filter button on the page.");
+            }
+        } catch (Exception e) {
+            System.err.println("[X] Error selecting 'Past 30 days' filter: " + e.getMessage());
+        }
+    }
+    
+    private static void convertPdfToJpg(Path pdfPath, Path jpgPath) {
+        try (PDDocument document = Loader.loadPDF(pdfPath.toFile())) {
+            PDFRenderer pdfRenderer = new PDFRenderer(document);
+            if (document.getNumberOfPages() > 0) {
+                // Render the first page of the PDF to BufferedImage at 200 DPI
+                BufferedImage bim = pdfRenderer.renderImageWithDPI(0, 200, ImageType.RGB);
+                ImageIO.write(bim, "jpg", jpgPath.toFile());
+                System.out.println("    [+] Successfully converted PDF invoice to JPG: " + jpgPath);
+            }
+        } catch (Exception e) {
+            System.err.println("    [X] Failed to convert PDF to JPG: " + e.getMessage());
+        }
     }
 }

@@ -8,7 +8,7 @@ An automated utility built with Java and the Playwright SDK to securely login, n
   - **Phase 1 (Interactive Setup)**: If no session is found, the program launches a visible browser where you log in manually, complete MFA/CAPTCHAs, and confirm in your terminal. It then serializes your secure session state to an `auth_state.json` file.
   - **Phase 2 (Headless Execution)**: On subsequent runs, the program runs headlessly in the background using the saved session state.
 - **Dynamic Infinite Scroll**: Automatically scrolls through the React-based Uber Trips dashboard, dynamically loading historical trips based on a 365-day lookback window.
-- **Resilient Downloads**: Intercepts native PDF downloads and gracefully falls back to generating print-to-PDF receipts when native buttons are missing. Implements local try-catch and retry logic for individual trips.
+- **Resilient Downloads & Screenshots**: Intercepts native PDF downloads (or prints to PDF if missing) and captures full-page JPEG screenshots for every trip page, ensuring both PDF and JPG formats are saved. Implements local try-catch and retry logic for individual trips.
 
 ## Prerequisites
 
@@ -64,10 +64,11 @@ As long as `auth_state.json` remains valid and unexpired, running the applicatio
 
 ## Output
 
-Downloaded PDF invoices are organized in local date-stamped directories:
+Downloaded files (both PDF invoices and full-page JPG screenshots) are organized in local date-stamped directories:
 
 ```
 ./downloads/uber_invoices_RUN_DATE/Uber_Invoice_TRIP_DATE_PRICE.pdf
+./downloads/uber_invoices_RUN_DATE/Uber_Invoice_TRIP_DATE_PRICE.jpg
 ```
 
 Where:
