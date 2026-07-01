@@ -13,17 +13,12 @@ import java.util.List;
 import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.rendering.PDFRenderer;
-import org.apache.pdfbox.rendering.ImageType;
-import java.awt.image.BufferedImage;
-import javax.imageio.ImageIO;
+
 
 public class UberInvoiceDownloader {
     
     private static final String AUTH_STATE_PATH = "auth_state.json";
-    private static final int DAYS_LIMIT = 365;
+    private static final int DAYS_LIMIT = 30;
     
     public static void main(String[] args) {
         System.out.println("[+] Starting Uber Invoice Downloader");
@@ -73,7 +68,6 @@ public class UberInvoiceDownloader {
                 }
             }
             
-            // If not logged in, trigger interactive Phase 1
             if (!loggedIn) {
                 System.out.println("[!] Initiating interactive setup (Phase 1)...");
                 browser = chromium.launch(new BrowserType.LaunchOptions().setHeadless(false));
@@ -154,7 +148,7 @@ public class UberInvoiceDownloader {
         
         int previousUniqueCount = 0;
         int retries = 0;
-        String selector = "a[href*='/trips/'], a[href*='jobId=']";
+        String selector = "[href*='/trips/'], [href*='jobId=']";
         
         while (retries < 3) {
             try {
@@ -193,23 +187,38 @@ public class UberInvoiceDownloader {
             int currentUniqueCount = extractedUrls.size();
             System.out.println("[DEBUG] Unique trips extracted so far: " + currentUniqueCount);
             
-            // Dual scroll: Scroll both the last element and the full page body
-            if (currentCount > 0) {
-                System.out.println("[+] Scrolling last trip element into view to trigger lazy loading...");
+            // Try to click 'More' button if visible to load more
+            Locator moreBtn = page.locator("button:has-text('More'), button[aria-label='More']");
+            boolean clickedMore = false;
+            if (moreBtn.count() > 0 && moreBtn.first().isVisible() && moreBtn.first().isEnabled()) {
+                System.out.println("[+] 'More' button is visible. Clicking to load more...");
                 try {
-                    tripLinks.last().scrollIntoViewIfNeeded();
+                    moreBtn.first().click();
+                    Thread.sleep(3000);
+                    clickedMore = true;
                 } catch (Exception e) {
-                    // Ignore
+                    System.out.println("[!] Failed to click 'More' button: " + e.getMessage());
                 }
             }
-            System.out.println("[+] Scrolling window to bottom...");
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
             
-            Thread.sleep((long) (3000 + Math.random() * 2000));
+            if (!clickedMore) {
+                // Dual scroll fallback: Scroll both the last element and the full page body
+                if (currentCount > 0) {
+                    System.out.println("[+] Scrolling last trip element into view to trigger lazy loading...");
+                    try {
+                        tripLinks.last().scrollIntoViewIfNeeded();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                }
+                System.out.println("[+] Scrolling window to bottom...");
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
+                Thread.sleep((long) (3000 + Math.random() * 2000));
+            }
             
             if (currentUniqueCount == previousUniqueCount) {
                 retries++; // No new unique trips discovered
-                System.out.println("[DEBUG] No new unique trips found on scroll. Retry " + retries + "/3...");
+                System.out.println("[DEBUG] No new unique trips found. Retry " + retries + "/3...");
             } else {
                 retries = 0;
                 previousUniqueCount = currentUniqueCount;
@@ -244,6 +253,17 @@ public class UberInvoiceDownloader {
             for (int attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
                     page.navigate(url);
+                    
+                    // Wait for the loader to hide if it's visible
+                    try {
+                        page.waitForSelector("[testid='loader']", new Page.WaitForSelectorOptions().setState(WaitForSelectorState.HIDDEN).setTimeout(8000));
+                    } catch (Exception e) {
+                        // ignore if no loader
+                    }
+                    
+                    // Wait for the trip details page to render (either "Your Trip" header or a generic wrapper)
+                    page.waitForSelector("h1:has-text('Your Trip'), h1:has-text('Trips'), button[aria-label='Back to trips']", new Page.WaitForSelectorOptions().setTimeout(15000));
+                    
                     page.waitForLoadState(LoadState.NETWORKIDLE);
                     
                     String pageText = "";
@@ -252,18 +272,26 @@ public class UberInvoiceDownloader {
                     } catch (Exception e) {
                         System.err.println("    [!] Warning: Failed to extract page text: " + e.getMessage());
                     }
-                    
                     String tripDate = parseTripDate(pageText);
+                    
+                    try {
+                        LocalDate parsedDate = LocalDate.parse(tripDate, DateTimeFormatter.ofPattern("yyyyMMdd"));
+                        LocalDate cutoffDate = LocalDate.now().minusDays(DAYS_LIMIT);
+                        if (parsedDate.isBefore(cutoffDate)) {
+                            System.out.println("    [-] Reached trip (" + tripDate + ") older than " + DAYS_LIMIT + " days lookback window. Stopping download.");
+                            return;
+                        }
+                    } catch (Exception dateEx) {
+                        // ignore and proceed
+                    }
+                    
                     String tripPrice = parseTripPrice(pageText);
                     
                     String filename = "Uber_Invoice_" + tripDate + "_" + tripPrice + ".pdf";
                     Path outputPath = downloadDir.resolve(filename);
+
                     
-                    String jpgFilename = "Uber_Invoice_" + tripDate + "_" + tripPrice + ".jpg";
-                    Path jpgOutputPath = downloadDir.resolve(jpgFilename);
-                    
-                    // Look for Download PDF button
-                    Locator downloadBtn = page.locator("a:has-text('Download Invoice'), a:has-text('Download PDF'), button:has-text('Download')");
+                    Locator downloadBtn = page.locator("a:has-text('Download Invoice'), a:has-text('Download PDF'), button:has-text('Download Invoice'), button:has-text('Download PDF')");
                     
                     if (downloadBtn.count() > 0) {
                         System.out.println("    [-] Found native download button. Intercepting download...");
@@ -275,9 +303,7 @@ public class UberInvoiceDownloader {
                         page.pdf(new Page.PdfOptions().setPath(outputPath).setPrintBackground(true));
                         System.out.println("    [+] Successfully exported PDF to: " + outputPath);
                     }
-                    
-                    // Convert the downloaded/generated PDF to JPEG
-                    convertPdfToJpg(outputPath, jpgOutputPath);
+
                     
                     break; // Success, break retry loop
                     
@@ -358,66 +384,48 @@ public class UberInvoiceDownloader {
     }
     
     private static String buildTripUrl(String tripId, String originalHref) {
-        if (originalHref.contains("uuid=")) {
-            return "https://riders.uber.com/trips/details?uuid=" + tripId;
-        } else if (originalHref.contains("jobId=")) {
-            return "https://riders.uber.com/trips/details?jobId=" + tripId;
-        }
         return "https://riders.uber.com/trips/" + tripId;
     }
     
     private static void selectPast30DaysFilter(Page page) {
         System.out.println("[+] Checking if 'Past 30 days' filter is selected...");
         try {
-            // Locate the filter dropdown button. It typically displays the active selection: e.g. "All Trips", "Past 30 days", etc.
-            Locator filterBtn = page.locator("button:has-text('All Trips'), button:has-text('Past 30 days'), button:has-text('January'), button:has-text('February'), button:has-text('March'), button:has-text('April'), button:has-text('May'), button:has-text('June'), button:has-text('July'), button:has-text('August'), button:has-text('September'), button:has-text('October'), button:has-text('November'), button:has-text('December')");
+            // Wait up to 15 seconds for the select dropdown to appear
+            page.waitForSelector("[data-baseweb='select']", new Page.WaitForSelectorOptions().setTimeout(15000));
             
-            if (filterBtn.count() > 0) {
-                String currentText = filterBtn.first().innerText();
+            // Locate the select dropdown that contains the date filter (not the Profile select)
+            Locator filterSelect = page.locator("[data-baseweb='select']").filter(
+                new Locator.FilterOptions().setHasNotText(Pattern.compile("Personal|Business|Profile", Pattern.CASE_INSENSITIVE))
+            ).first();
+            
+            if (filterSelect.count() > 0) {
+                String currentText = filterSelect.innerText();
                 System.out.println("[+] Current filter text: " + currentText.trim());
                 
                 if (!currentText.toLowerCase().contains("past 30 days")) {
-                    System.out.println("[+] Clicking filter button to expand the dropdown...");
-                    filterBtn.first().click();
+                    System.out.println("[+] Clicking filter select dropdown...");
+                    filterSelect.click();
                     
-                    // Wait for options list/popover
-                    Thread.sleep(1500);
+                    // Wait for options list to be visible
+                    String optionSelector = "[role='option']:has-text('Past 30 days'), li:has-text('Past 30 days'), text='Past 30 days'";
+                    page.waitForSelector(optionSelector, new Page.WaitForSelectorOptions().setTimeout(5000));
                     
-                    // Target "Past 30 days" options inside the dropdown menu (e.g. list items, buttons, or role=option)
-                    Locator past30Option = page.locator("button:has-text('Past 30 days'), li:has-text('Past 30 days'), [role='menuitem']:has-text('Past 30 days'), [role='option']:has-text('Past 30 days')");
-                    if (past30Option.count() > 0) {
-                        System.out.println("[+] Clicking 'Past 30 days' option...");
-                        past30Option.first().click();
-                    } else {
-                        System.out.println("[+] Fallback: clicking any element with exact text 'Past 30 days'...");
-                        page.locator("text=Past 30 days").last().click();
-                    }
+                    System.out.println("[+] Clicking 'Past 30 days' option...");
+                    page.locator(optionSelector).last().click();
                     
-                    // Wait for page to reload or settle
+                    // Wait for page to reload/settle
                     page.waitForLoadState(LoadState.NETWORKIDLE);
+                    Thread.sleep(2000);
                     System.out.println("[+] Successfully selected 'Past 30 days' filter.");
                 } else {
                     System.out.println("[+] 'Past 30 days' filter is already selected.");
                 }
             } else {
-                System.out.println("[!] Warning: Could not locate filter button on the page.");
+                System.out.println("[!] Warning: Could not locate filter select dropdown on the page.");
             }
         } catch (Exception e) {
             System.err.println("[X] Error selecting 'Past 30 days' filter: " + e.getMessage());
         }
     }
-    
-    private static void convertPdfToJpg(Path pdfPath, Path jpgPath) {
-        try (PDDocument document = Loader.loadPDF(pdfPath.toFile())) {
-            PDFRenderer pdfRenderer = new PDFRenderer(document);
-            if (document.getNumberOfPages() > 0) {
-                // Render the first page of the PDF to BufferedImage at 200 DPI
-                BufferedImage bim = pdfRenderer.renderImageWithDPI(0, 200, ImageType.RGB);
-                ImageIO.write(bim, "jpg", jpgPath.toFile());
-                System.out.println("    [+] Successfully converted PDF invoice to JPG: " + jpgPath);
-            }
-        } catch (Exception e) {
-            System.err.println("    [X] Failed to convert PDF to JPG: " + e.getMessage());
-        }
-    }
+
 }
